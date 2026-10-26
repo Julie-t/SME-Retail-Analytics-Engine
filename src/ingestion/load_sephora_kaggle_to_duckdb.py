@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,8 +16,6 @@ from typing import Sequence
 
 import duckdb
 from dotenv import load_dotenv
-
-from src.ingestion.load_beauty_api_to_duckdb import _create_verified_backup
 
 DATASET_ID = "nadyinky/sephora-products-and-skincare-reviews"
 DATASET_URL = "https://www.kaggle.com/datasets/nadyinky/sephora-products-and-skincare-reviews"
@@ -644,6 +643,42 @@ def _write_manifest(
         "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         records,
     )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _create_verified_backup(database_path: Path) -> Path | None:
+    if not database_path.is_file():
+        return None
+
+    backup_directory = database_path.parent / "backups"
+    backup_directory.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_path = backup_directory / f"{database_path.stem}_{timestamp}.duckdb"
+    if backup_path.exists():
+        raise FileExistsError(f"Refusing to overwrite existing backup {backup_path}.")
+
+    source_hash = _sha256(database_path)
+    shutil.copy2(database_path, backup_path)
+    if _sha256(backup_path) != source_hash:
+        raise RuntimeError(f"Database backup checksum verification failed: {backup_path}")
+
+    backup_connection = duckdb.connect(":memory:")
+    try:
+        backup_literal = str(backup_path).replace("'", "''")
+        catalog_name = database_path.stem.replace('"', '""')
+        backup_connection.execute(
+            f'ATTACH \'{backup_literal}\' AS "{catalog_name}" (READ_ONLY)'
+        )
+    finally:
+        backup_connection.close()
+    return backup_path
 
 
 def ingest_sephora_dataset(

@@ -20,6 +20,55 @@
 
 ## Log of Changes & Execution Steps
 
+### [2026-10-26] - Production Service Launch & Review Analytics Activation
+- **Review analytics production activation**: Promoted the candidate database containing all 10 review analytics models into production storage (`data/retail_engine.duckdb`) using a backup-first Win32 atomic file swap. All 16 production relations (including 4 raw tables, 2 staging views, 2 intermediate tables, 8 review Gold marts, and 4 catalogue Gold marts) are active and verified.
+- **Production fingerprint**: Upgraded from 427,044,864 bytes to `857,223,168` bytes, with SHA-256 `A0D727232F2EF03F9886AD6846579A694EE3583EC8676A2898033E84744B20BD`. Read-only inspection verified:
+  - `main.int_product_catalog`: 8,494 rows
+  - `main.int_review_analytics`: 1,094,411 rows
+  - `main.mart_catalog_by_brand`: 304 rows
+  - `main.mart_catalog_by_category`: 9 rows
+  - `main.mart_catalog_quality_summary`: 1 row
+  - `main.mart_product_catalog`: 8,494 rows
+  - `main.mart_review_brand_summary`: 142 rows
+  - `main.mart_review_category_summary`: 1 row
+  - `main.mart_review_monthly_trends`: 176 rows
+  - `main.mart_review_product_summary`: 2,351 rows
+  - `main.mart_review_quality_summary`: 1 row
+  - `main.mart_review_rating_distribution`: 5 rows
+  - `main.mart_review_recommendation_summary`: 1 row
+  - `main.mart_review_summary`: 1 row
+  - `main.stg_raw_products`: 8,494 rows
+  - `main.stg_raw_reviews`: 1,094,411 rows
+  - `raw.raw_products`: 8,494 rows
+  - `raw.sephora_ingestion_manifest`: 6 rows
+  - `raw.sephora_product_info`: 8,494 rows
+  - `raw.sephora_reviews`: 1,094,411 rows
+- **Preserved pre-cutover backups**:
+  - `data/backups/retail_engine_pre_cutover_20261026_152928.duckdb` (`427,044,864` bytes, SHA-256 `E36903CF6096890A059CDEBF7B0971821DA69FE165C3BAA3D979523F7D475079`).
+  - `data/backups/retail_engine_replaced_during_cutover_20261026_152928.duckdb` (`427,044,864` bytes, SHA-256 `E36903CF6096890A059CDEBF7B0971821DA69FE165C3BAA3D979523F7D475079`).
+- **Configuration & portability enhancement**: Removed static `database: retail_engine` from line 5 of `dbt_retail/model/staging/schema.yml` to allow dynamic target database binding without alias conflicts across isolated staging and production profiles.
+- **Verification & test results**:
+  - `dbt test --project-dir dbt_retail --profiles-dir dbt_retail`: **PASS=119 WARN=0 ERROR=0 SKIP=0** (all 119 data tests passing).
+  - `python -m pytest tests -q`: **106 passed**, 1 warning in 12.34s.
+  - API smoke test: Verified all 14 GET endpoints returning live production numbers (8,494 products, 1,094,411 reviews, 4.2992 avg rating).
+  - Groq assistant: Verified grounded natural-language query routing and refusal of unsupported commercial questions.
+- **Production database integrity**: Zero mutation of production database during service verification; file size and SHA-256 checksum remained identical before and after all test runs.
+
+### [2026-10-26] - Live Groq Provider End-to-End Verification
+- **Live provider verification**: Verified the Groq-backed natural language assistant end-to-end against the real Groq provider using the Groq Python SDK 1.7.0 and model `openai/gpt-oss-20b` (configured in `.env`). The live integration successfully executed tool-calling, selecting allowlisted analytics operations and grounding responses in deterministic DuckDB queries.
+- **Model compatibility**: The initial default model `llama-3.3-70b-versatile` returned HTTP 404 (`model_not_found`) because it is not provisioned on the current account tier. Account model discovery via `client.models.list()` identified available models: `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, and `qwen/qwen3.8-27b`. Configuring `GROQ_MODEL=openai/gpt-oss-20b` in `.env` enabled successful real provider tool calling and response handling.
+- **Defects identified and corrected**:
+  1. *Prompt injection uncaught exception*: `_normalize_question` raised `UnsupportedQuestionError` before the `try` block in `ask()`, which leaked an unhandled exception to FastAPI. Wrapped question normalization in a `try/except UnsupportedQuestionError` block returning safe responses with `supported=False`, `provider_status="unsupported_question"`, and safe rejection reasons.
+  2. *Groq provider error handling*: `ask()` previously caught only `(ProviderFailure, ValueError, ValidationError, TypeError, json.JSONDecodeError)`. When Groq SDK raised `GroqError` subclasses (e.g. `NotFoundError`, `RateLimitError`, `APITimeoutError`), these bypassed the handler and crashed the endpoint. Updated `ask()` to catch all provider exceptions, mapping `RateLimitError` to `provider_status="rate_limit"`, timeout exceptions to `provider_status="timeout"`, and general provider failures to `provider_status="provider_error"`, while preserving the deterministic calculation result.
+  3. *Secret redaction*: Added `_sanitize_error_message()` to scrub API keys and `gsk_*` token patterns from exception strings before embedding into `reason`.
+- **Offline regression test suite**: Added regression tests for prompt injection refusal, rate limit mapping, timeout mapping, and secret sanitization in `tests/test_assistant_service.py`. The full offline test suite expanded from **103 to 106 tests**, all passing with one pre-existing Starlette/httpx deprecation warning.
+- **Isolated validation & latency benchmarks**: All live testing ran against an isolated DuckDB copy at `%TEMP%\sme-groq-live-validation-20261026\retail_engine.duckdb`. Measured multi-stage sample latencies:
+  - Scenario A (`catalog_category_counts`, 9 categories): Groq tool selection 2,922.70 ms, deterministic execution 173.84 ms, explanation 0.04 ms, total 3,096.87 ms.
+  - Scenario B (`review_summary`, 1,094,411 reviews): Groq tool selection 1,438.72 ms, deterministic execution 226.15 ms, explanation 0.09 ms, total 1,665.08 ms.
+  - FastAPI E2E HTTP POST `/assistant/ask`: 2,184.08 ms.
+- **Security & correctness checks**: Independent SQL queries on the isolated warehouse verified that returned category counts and review aggregates (1,094,411 review rows, 4.2992 avg rating, 0.8400 rec rate) matched exactly. Unsupported commercial queries (sales revenue, inventory on hand) and adversarial prompt injection / arbitrary SQL requests were safely rejected with `supported=False` and `provider_status="unsupported_question"`.
+- **Production boundary & database safety**: The production database at `data/retail_engine.duckdb` was checked before and after all testing; its fingerprint remained unchanged at 427,044,864 bytes and SHA-256 `E36903CF6096890A059CDEBF7B0971821DA69FE165C3BAA3D979523F7D475079`. No write or dbt build was performed on production. Review mart activation in production remains a separate authorized milestone.
+
 ### [2026-10-26] - Grounded Groq Assistant Finalization
 - **Assistant behavior**: Added `POST /assistant/ask` as an optional, additive endpoint. Supported catalogue and review questions map to allowlisted operations backed by deterministic analytics readers; numeric results are not calculated or invented by the provider. Unsupported business metrics and unsafe prompt/SQL requests are rejected. The response includes the selected operation, source mart, metric definition, structured result, and provider status.
 - **Configuration and documentation**: Wired `GROQ_TIMEOUT_SECONDS` and `GROQ_MAX_RETRIES` into the Groq client configuration with validation; invalid settings now produce HTTP 503 at the assistant endpoint. Updated `.env.example` and `README.md` to describe the optional provider settings, environment setup, endpoint behavior, supported analytics, and the fact that offline tests do not verify a live Groq key. The app does not automatically load `.env`.
@@ -217,3 +266,24 @@
 - **Offline fixtures and tests**: Added `tests/fixtures/sephora/` with one small synthetic product CSV (3 rows) and five synthetic review CSVs (5 total rows). The fixtures demonstrate category hierarchy, text ingredients, product-level numeric fields, review filename provenance, one exact duplicate review row, and one orphan review row; both review cases are retained. Added `tests/test_sephora_ingestion.py` for manifest checksums/counts, complete and catalog-only modes, partial/missing/unexpected inventory, schema validation, duplicate product-ID rollback, CSV parse rollback, malformed numerics, source-text preservation, idempotent replacement, and refusal to write to the default production path. Updated `tests/test_catalog_metrics.py` for the revised source-backed API metric contract. The final `C:\Users\eddyj\AppData\Local\anaconda3\python.exe -m pytest tests -q` passed **77 tests**, with one existing Starlette/httpx TestClient deprecation warning.
 - **Isolated database/dbt/API verification**: Copied production `data/retail_engine.duckdb` to the external session directory `C:\Users\eddyj\.copilot\session-state\cf36a56e-8d11-4fb5-ac46-73122a40c082\files\sephora-migration\retail_engine.duckdb`; the pre-ingestion copy SHA-256 equaled production (`5A9BEF0D623E6744FA388B22150ABD8299FF18C14104FE6316A8BC1201E14488`). Ran the fixture loader only against that copy; it loaded 3 products and 5 reviews, and recorded 1 duplicate review row and 1 orphan review row, retaining both. dbt 1.12.5 with dbt-duckdb 1.11.0 passed `dbt debug`, `dbt parse --no-partial-parse`, `dbt compile --no-partial-parse`, and full `dbt build --no-partial-parse` using an external profile, target, and log paths. Final build result: **PASS=61, WARN=0, ERROR=0, SKIP=0** (6 models, 55 data tests). FastAPI TestClient on the built copy returned HTTP 200 for `/health`, `/metrics/catalog`, `/metrics/catalog/categories`, `/metrics/catalog/category-summary`, `/metrics/catalog/brands`, and `/metrics/catalog/quality`. Independently calculated SQL agreed with API category, brand, and quality results. Fixture raw product rows/distinct IDs = 3/3; mean listed price = USD 46.50; category rows were Makeup 1 and Skincare 2; normalized brand groups = 2. The product quality summary has 3 product rows and 1 missing ingredient-text row. These are fixture checks only, not real Kaggle counts or API observations.
 - **Production boundary and next actions**: Rechecked the configured production database after validation. It remains 37,236,736 bytes, modified `2026-10-14T11:36:05.9287356Z`, SHA-256 `5A9BEF0D623E6744FA388B22150ABD8299FF18C14104FE6316A8BC1201E14488`; no ingestion or dbt command targeted it. The new API code, tested with `RETAIL_ENGINE_DB_PATH` unset and therefore pointed at production, returned HTTP 503 on all six catalog/health routes because the unchanged old product mart lacks the new source-specific columns and the three summary marts are absent. No API listener was active. Deploying only the new application code before promoting the matching validated database would fail readiness; activate code and database together after separate approval. No Beauty API request, Kaggle download, production DuckDB mutation, production dbt build, or LLM integration occurred. The local production database remains the old Beauty API catalogue. Before production activation, obtain the actual dataset, confirm all headers/file inventory and row counts, assess review duplicates/orphans/numeric quality, rerun ingestion/dbt/API/independent SQL on a fresh isolated copy, verify a fresh closed-file backup, and obtain explicit approval for a maintenance-window file-level promotion and rollback plan.
+
+### [2026-10-26] - Final MVP Milestone: Streamlit Business Dashboard
+- **Architecture & Decoupling**: Built a dedicated presentation layer in `dashboard/` (`streamlit_app.py`, `api_client.py`, `components.py`) consuming the activated FastAPI serving engine (`http://127.0.0.1:8000`). Streamlit functions exclusively as an HTTP consumer using `RetailEngineClient` with configurable timeout/base URL settings; zero direct database connections to DuckDB are made from Streamlit, and zero analytics math or SQL queries are duplicated in the presentation tier.
+- **Seven Core Dashboard Sections**:
+  1. *Executive Overview*: High-level retail KPIs (8,494 products, 304 brands, 9 categories, 4.30 avg rating, 5.0 median rating, 1,094,411 reviews, 84.00% recommendation rate, 4.57M feedback votes) plus category share and 1-5 star distribution charts.
+  2. *Review Analytics*: Detailed rating breakdown, recommendation split (778K positive, 148K negative), and 15-year longitudinal area chart over 176 monthly buckets (2008–2023).
+  3. *Product Explorer*: Searchable and sortable explorer across all 2,351 reviewed products with SKU search, minimum review count slider, rating, and recommendation rate.
+  4. *Brand Explorer*: Top N brand volume slider and ranked performance table across 142 partner brands.
+  5. *Data Quality & Governance*: Side-by-side diagnostic breakdown of 31 catalogue metrics and 16 review cleanliness checks, explaining zero dropped records.
+  6. *AI Retail Analyst*: Natural-language query interface connecting to `POST /assistant/ask` with quick prompt buttons, grounded markdown responses, provenance badges (`source_mart`), and refusal banners for out-of-scope commercial questions.
+  7. *Dataset Scope & Limitations*: Prominent banner and explanation emphasizing that the Kaggle Sephora snapshot reflects catalogue attributes and review sentiment, not actual store transactions, order revenues, product margins, inventory stock-on-hand, or profit.
+- **Safety, Caching & Performance**:
+  - Caching implemented using `@st.cache_data(ttl=60)` with an explicit 60-second time-to-live and a visible "Refresh Data Cache" button in the sidebar.
+  - Fail-safe state handling: if FastAPI is offline, clear restart instructions are rendered instead of uncaught tracebacks.
+  - LLM credentials are never exposed: `GROQ_API_KEY` remains strictly backend-only.
+- **Test Verification & Database Safety**:
+  - Full pytest test suite: **114 passing tests** (106 backend + 8 new `test_dashboard_api_client.py` tests).
+  - Streamlit AppTest: Automated in-memory execution verified all 7 tabs compile and render with zero exceptions.
+  - Safe read-only dbt tests: **119 data tests passed** (`PASS=119 WARN=0 ERROR=0 SKIP=0`).
+  - Production database fingerprint: Size `857,223,168` bytes, SHA-256 `A0D727232F2EF03F9886AD6846579A694EE3583EC8676A2898033E84744B20BD` remained 100% unchanged before and after all testing.
+

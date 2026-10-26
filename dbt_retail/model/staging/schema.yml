@@ -2,7 +2,6 @@ version: 2
 
 sources:
   - name: raw
-    database: retail_engine
     schema: raw
     description: Raw source-faithful and canonical tables loaded from the local Kaggle dataset.
     tables:

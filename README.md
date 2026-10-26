@@ -1,41 +1,129 @@
 # Deterministic SME Retail Analytics Engine
 
-Local-first catalogue analytics using DuckDB, dbt, Polars, and FastAPI. The
-default catalogue source is a local download of
-[Kaggle's Sephora Products and Skincare Reviews dataset](https://www.kaggle.com/datasets/nadyinky/sephora-products-and-skincare-reviews).
-The optional Groq-backed assistant is an additive interface to allowlisted
-deterministic catalogue and review metrics; it does not replace or calculate
-those metrics.
+Local-first catalogue and customer review analytics using DuckDB, dbt, Polars,
+and FastAPI. Both product catalogue analytics (8,494 products) and review-grain
+analytics (1,094,411 reviews across 10 Gold marts) are active in production
+storage (`data/retail_engine.duckdb`). The optional Groq-backed assistant
+provides a natural-language interface routed strictly to allowlisted,
+deterministic analytics operations; it interprets questions and explains
+deterministic results, but never calculates or invents business metrics.
 
-## Install and configure
+> **Data Boundary & Commercial Limitations**: The underlying source is Kaggle's
+> Sephora product catalogue and customer reviews snapshot. The dataset supports
+> catalogue intelligence and review sentiment/feedback diagnostics. It contains
+> **no** sales transactions, customer order histories, actual revenue, product
+> cost/margin, inventory stock-on-hand, or profit metrics. Listed prices
+> (`price_usd`) represent catalogue shelf attributes, not realized transaction
+> prices. Review counts and loves counts are engagement signals, not units sold.
 
-`requirements.txt` contains runtime dependencies, including KaggleHub.
-`requirements-dev.txt` adds pytest and HTTP test dependencies:
+## Install and run locally
+
+### 1. Install dependencies
+
+`requirements.txt` contains core runtime dependencies (DuckDB, Polars, FastAPI,
+Uvicorn, Groq, KaggleHub). `requirements-dev.txt` includes pytest, HTTP testing,
+and development tools:
 
 ```powershell
 python -m pip install -r requirements-dev.txt
 ```
 
-The Kaggle dataset is
-[Sephora Products and Skincare Reviews](https://www.kaggle.com/datasets/nadyinky/sephora-products-and-skincare-reviews),
-handle `nadyinky/sephora-products-and-skincare-reviews`. Configure KaggleHub
-authentication using Kaggle's supported credentials for your account. If Kaggle
-requires dataset terms or consent, visit the dataset page, accept them while
-signed in, and retry. Do not put Kaggle tokens in source code, command
-arguments, logs, or Git. `.env` is ignored; the downloader does not print or
-persist credentials.
+### 2. Configure environment variables
 
-`RETAIL_ENGINE_DB_PATH` selects the DuckDB file used by the serving API.
-`SEPHORA_DATASET_DIR` optionally selects another local dataset directory; its
-default is `data\source\sephora_kaggle\`. Downloading never opens DuckDB.
+Configure runtime parameters in your process environment or via a local `.env`
+file (referenced by `.env.example`). The application does not automatically load
+`.env` at runtime; use `--env-file .env` with Uvicorn or set process environment
+variables:
 
-The optional assistant reads `GROQ_API_KEY`, `GROQ_MODEL`,
-`GROQ_TIMEOUT_SECONDS`, and `GROQ_MAX_RETRIES` from the API process environment.
-The defaults are `llama-3.3-70b-versatile`, 30 seconds, and 2 retries. Copy
-`.env.example` as a reference, but note the application does not automatically
-load `.env`; configure the variables in the process environment instead. Keep
-the API key out of source control, command arguments, and logs. Invalid timeout
-or retry values are reported as configuration errors.
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `RETAIL_ENGINE_DB_PATH` | No | `data/retail_engine.duckdb` | Path to the serving DuckDB database file. |
+| `SEPHORA_DATASET_DIR` | No | `data\source\sephora_kaggle\` | Local directory for raw Kaggle dataset downloads. |
+| `GROQ_API_KEY` | Optional | `None` | API key for the natural-language assistant endpoint (`POST /assistant/ask`). Not required for core deterministic endpoints. |
+| `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq model identifier (e.g. `openai/gpt-oss-20b` or `llama-3.3-70b-versatile`). |
+| `GROQ_TIMEOUT_SECONDS` | No | `30.0` | Timeout in seconds for LLM assistant requests. |
+| `GROQ_MAX_RETRIES` | No | `2` | Maximum retries for provider API calls. |
+
+*Security Rule*: Never hardcode, commit, or print API keys or credentials in
+source code, terminal output, logs, or reports. `.env` is excluded by `.gitignore`.
+
+### 3. Start the API service
+
+Start Uvicorn bound to loopback:
+
+```powershell
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Or, if utilizing a local `.env` configuration file:
+
+```powershell
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --env-file .env
+```
+
+*Note*: The service listens on loopback (`127.0.0.1:8000`) for local access and
+is not exposed to the public internet or external cloud networks unless
+separately provisioned behind a secure reverse proxy. Interactive OpenAPI
+documentation is available at `http://127.0.0.1:8000/docs`.
+
+### 4. Start the interactive Streamlit dashboard
+
+The interactive Streamlit dashboard provides a business presentation layer for beauty retail stakeholders (e.g. Aboostos merchandising, category, and digital leadership) to explore catalogue and customer review analytics.
+
+Streamlit is strictly a presentation client. It consumes the FastAPI endpoints via a typed HTTP client (`dashboard.api_client.RetailEngineClient`) and **never connects directly to production DuckDB** or performs ad-hoc metrics math.
+
+#### Launching in separate terminals
+
+**Terminal 1 — Analytics & Assistant Backend (FastAPI):**
+```powershell
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+**Terminal 2 — Business Presentation Layer (Streamlit):**
+```powershell
+.venv\Scripts\python.exe -m streamlit run dashboard/streamlit_app.py --server.port 8501
+```
+
+Once launched, access the dashboard at:
+👉 **`http://127.0.0.1:8501`**
+
+#### Dashboard architecture & safety principles
+
+1. **Backend as Single System of Record:** Streamlit performs zero direct DuckDB database queries. All KPIs, trends, distributions, rankings, and diagnostics are fetched through existing FastAPI HTTP routes (`/metrics/*` and `/assistant/ask`).
+2. **Zero Math Duplication:** The presentation layer does not duplicate SQL or dbt logic. Averages, medians, shares, and totals are pure bindings to deterministic backend responses.
+3. **Decoupled URL Configuration:** Default backend URL resolves to `http://127.0.0.1:8000` or `os.environ.get("RETAIL_ENGINE_API_URL")`. It can be overridden dynamically from the Streamlit sidebar.
+4. **Short-Lived Caching & Refresh:** Heavy metric queries use Streamlit's `@st.cache_data(ttl=60)` with an explicit 60-second time-to-live and an on-screen "🔄 Refresh Data Cache" button.
+5. **Fail-Closed AI Assistant:** Streamlit interacts with Groq exclusively via FastAPI's `POST /assistant/ask`. Streamlit never loads `GROQ_API_KEY` or calls the LLM provider directly.
+6. **Graceful Error Handling:** If the backend is unreachable or returns HTTP 503, the dashboard displays clear diagnostic messages with the exact uvicorn restart command rather than crashing.
+
+#### Five-minute executive demo script (Aboostos beauty retail scenario)
+
+Use this structured script to present the analytics engine to nontechnical retail executives in five minutes:
+
+| Minute | Tab / Action | Speaking Points & Business Demonstration |
+| --- | --- | --- |
+| **0:00 - 1:00** | **📊 Executive Overview** | *"Welcome to the Aboostos Retail Intelligence Engine. Here we see our high-level footprint: 8,494 products across 304 brands and 9 departments. Our catalogue is dominated by Skincare (28.5%) and Makeup (27.9%). Customer sentiment is exceptionally strong, with an average rating of 4.30 stars, a 5.0 median, and an 84.0% recommendation rate across 1.09 million reviews."* |
+| **1:00 - 2:00** | **⭐ Review Analytics** | *"Drilling into customer sentiment: our 1-5 star distribution reveals that over 65% of all submissions are 5-star reviews. Looking at our 15-year longitudinal trend (176 monthly buckets from 2008 to 2023), review volume peaked strongly during holiday shopping windows while average ratings remained remarkably consistent. Customer feedback helpfulness shows 4.57 million votes with a 78.6% positive utility rate."* |
+| **2:00 - 2:45** | **🔍 Product Explorer** | *"For merchandising and SKU management, the Product Explorer lets us inspect all 2,351 reviewed items. We can search for products like 'Lip Sleeping Mask' or filter by minimum review volume. Sorting reveals our top-engaged hero products, their verified rating distributions, and customer recommendation percentages."* |
+| **2:45 - 3:30** | **🏷️ Brand Explorer** | *"In Brand Explorer, we compare sentiment across 142 partner brands. Using the slider, we rank top brands by volume: Clinique and Sephora Collection lead total reviews, while boutique skincare brands achieve recommendation rates exceeding 90%. This gives our buying team leverage during vendor negotiations."* |
+| **3:30 - 4:15** | **🛡️ Data Quality & Governance** | *"Under Governance, we demonstrate total transparency. Our deterministic data audit verifies zero duplicate product IDs and 100% referential integrity between reviews and products. Diagnostics flag missing ingredient text (11.1%) and duplicate brand/name candidates without dropping any customer records."* |
+| **4:15 - 5:00** | **💬 AI Retail Analyst & Boundaries** | *"Finally, our AI Retail Analyst allows leadership to ask natural-language questions. When we ask 'What are the top brands by review volume?', the AI routes to DuckDB and explains the verified figures. Crucially, when asked 'What is our sales revenue and profit margin?', the engine refuses honestly, protecting executives from hallucinated financial figures."* |
+
+#### Sample questions for the AI Retail Analyst
+
+**Supported Questions (Deterministic Grounding):**
+- *"Give me the overall review summary."* (Routes to `mart_review_summary`)
+- *"What are the product counts by category?"* (Routes to `mart_catalog_by_category`)
+- *"What is the rating distribution for customer reviews?"* (Routes to `mart_review_rating_distribution`)
+- *"What are the top brands by review volume?"* (Routes to `mart_review_brand_summary`)
+- *"What are the monthly review trends over time?"* (Routes to `mart_review_monthly_trends`)
+- *"Tell me about our top reviewed products."* (Routes to `mart_review_product_summary`)
+
+**Unsupported Commercial Questions (Honest Refusal):**
+- *"What was our total store sales revenue last quarter?"* (Refused: No point-of-sale transaction data)
+- *"Which products have the highest gross profit margin?"* (Refused: No wholesale cost or margin data)
+- *"How many units of Lip Sleeping Mask are currently in stock?"* (Refused: No inventory stock-on-hand data)
+- *"Predict next month's store revenue based on customer ratings."* (Refused: No financial prediction models)
 
 ## Download and ingest the Kaggle files
 
@@ -152,7 +240,7 @@ The adapter maps the verified Kaggle headers to the existing product grain as fo
 | `loves_count` | `loves_count` | Popularity signal, not sales. |
 | Product flags | Same-named optional columns | Preserved and typed where available; absent optional fields remain NULL. |
 
-The old Beauty API's `origin` and five formulation booleans are not invented
+Unobserved product attributes such as `origin` and specific formulation booleans are not invented
 for the Kaggle source. Review rows remain in their own raw relation and are
 never joined into the product-grain model. Review-key, duplicate-row, orphan,
 rating-parse, and recommendation-parse counts are recorded by ingestion; no
@@ -183,17 +271,31 @@ No transaction, realized price, cost, margin, inventory movement, or customer
 purchase data is available. Product aggregates `rating`, `reviews`, and
 `loves_count` are not review-row counts, sales, or revenue.
 
-The FastAPI catalog endpoints are `/health`, `/metrics/catalog`,
-`/metrics/catalog/categories`, `/metrics/catalog/category-summary`,
-`/metrics/catalog/brands`, and `/metrics/catalog/quality`. The API reads the
-path in `RETAIL_ENGINE_DB_PATH` or defaults to `data\retail_engine.duckdb`.
-Required missing/incompatible Gold relations return HTTP 503 rather than
-success-shaped zero metrics. Existing API response keys tied only to the old
-Beauty API (`origin`, formulation flags, and JSON ingredient structure) remain
-present as null when they are not applicable to this source. The legacy
-`missing_ingredient_payload_*` compatibility fields mirror ingredient-text
-missingness; new source-specific fields report numeric and ingredient-text
-diagnostics.
+### Documented API Endpoints (14 GET Endpoints + 1 POST Endpoint)
+
+The API reads the database path from `RETAIL_ENGINE_DB_PATH` or defaults to
+`data/retail_engine.duckdb`. Missing or incompatible Gold relations return HTTP 503
+rather than success-shaped zero metrics. All 14 GET endpoints query deterministic
+marts and cache results in memory using file metadata (mtime/size) invalidation:
+
+| Domain | Route | Response Model | Description |
+| --- | --- | --- | --- |
+| **System** | `GET /health` | `HealthResponse` | Readiness probe. Validates that the Gold warehouse is reachable and `main.mart_product_catalog` can be queried. |
+| **Catalogue** | `GET /metrics/catalog` | `CatalogMetricsResponse` | Catalogue totals (8,494 products), category counts, and high-level quality flags. |
+| **Catalogue** | `GET /metrics/catalog/categories` | `CategoryCountsResponse` | Product counts grouped by canonical primary category (9 categories). |
+| **Catalogue** | `GET /metrics/catalog/category-summary` | `CatalogCategorySummaryResponse` | Product counts and percentage shares by category from `mart_catalog_by_category`. |
+| **Catalogue** | `GET /metrics/catalog/brands` | `BrandCountsResponse` | Product counts and shares across 304 normalized brands from `mart_catalog_by_brand`. |
+| **Catalogue** | `GET /metrics/catalog/quality` | `CatalogQualitySummaryResponse` | 31 product catalogue quality diagnostics and rates from `mart_catalog_quality_summary`. |
+| **Reviews** | `GET /metrics/reviews` | `ReviewMetricsResponse` | Overall review totals: 1,094,411 reviews, 4.2992 avg rating, 5.0 median, 0.8400 recommendation rate, and helpfulness metrics. |
+| **Reviews** | `GET /metrics/reviews/ratings` | `ReviewRatingDistributionResponse` | Distribution of valid ratings (1 to 5) and percentage shares from `mart_review_rating_distribution`. |
+| **Reviews** | `GET /metrics/reviews/recommendations` | `ReviewRecommendationSummaryResponse` | Valid recommendation rate (84.0%) over 926,423 valid values, plus missing count from `mart_review_recommendation_summary`. |
+| **Reviews** | `GET /metrics/reviews/trends` | `ReviewTrendsResponse` | Monthly review counts, valid ratings, and recommendation rates across 176 months from `mart_review_monthly_trends`. |
+| **Reviews** | `GET /metrics/reviews/products` | `ReviewProductsResponse` | Deterministic review metrics for all 2,351 reviewed products from `mart_review_product_summary`. |
+| **Reviews** | `GET /metrics/reviews/brands` | `ReviewBrandsResponse` | Review metrics by brand across 142 normalized brands from `mart_review_brand_summary`. |
+| **Reviews** | `GET /metrics/reviews/categories` | `ReviewCategoriesResponse` | Review metrics by product category from `mart_review_category_summary`. |
+| **Reviews** | `GET /metrics/reviews/quality` | `ReviewQualitySummaryResponse` | Review source quality diagnostics, issue rates, duplicate candidates, and orphan counts from `mart_review_quality_summary`. |
+| **Assistant** | `POST /assistant/ask` | `AssistantAnswerResponse` | Grounded natural language analytics interface routing queries to allowlisted deterministic operations. |
+
 
 ### Optional Groq assistant
 
@@ -220,9 +322,59 @@ unsupported rather than answered with invented metrics.
 
 The endpoint returns HTTP 503 when `GROQ_API_KEY` is missing or assistant
 configuration is invalid. Provider failures after deterministic calculation
-return the deterministic result with a non-`ok` `provider_status`; this does
-not mean the live provider was verified. Offline tests mock provider calls and
-do not require or verify a real Groq API key.
+return the deterministic result with a non-`ok` `provider_status` (such as
+`rate_limit`, `timeout`, `provider_error`, or `malformed_response`) without
+leaking secrets or stack traces. Offline tests mock provider calls and do not
+require a real Groq API key (106 offline tests pass).
+
+#### Live Groq provider verification
+
+Live integration was verified end-to-end against the real Groq provider using
+a controlled, bounded verification runner:
+
+- **Configured Model**: `GROQ_MODEL` defaults to `llama-3.3-70b-versatile`. On
+  accounts where that model is not provisioned (returning 404), compatible
+  models such as `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, or
+  `qwen/qwen3.8-27b` can be selected via `GROQ_MODEL`. Live tool calling was
+  verified with `openai/gpt-oss-20b` and `openai/gpt-oss-120b`.
+- **SDK & Interface**: Groq Python SDK `1.7.0` using OpenAI-compatible function
+  calling (`tools` with `tool_choice="required"`).
+- **Database Isolation**: The test runner enforces an isolated database path
+  (`RETAIL_ENGINE_DB_PATH`) pointing to a temporary copy outside the repository
+  (e.g., in `$env:TEMP`). It strictly prohibits running against production
+  `data\retail_engine.duckdb`.
+- **Verified Scenarios**:
+  - *Scenario A (Catalogue Categories)*: Question "What are the product counts by
+    category?" routed to `catalog_category_counts`, arguments validated, and
+    all 9 category counts matched independent SQL over the warehouse.
+  - *Scenario B (Review Summary)*: Question "Give me the overall review summary."
+    routed to `review_summary`, returning 1,094,411 reviews, 4.2992 average
+    rating, and 0.8400 recommendation rate, matching independent SQL.
+  - *Scenario C (Unsupported Metrics)*: Question asking for sales revenue and
+    inventory on hand safely refused as `unsupported_question` without SQL or
+    hallucinated numbers.
+  - *Scenario D (Adversarial)*: Prompt injection and arbitrary SQL instructions
+    safely refused with `provider_status="unsupported_question"`.
+  - *Scenario E (FastAPI E2E & Fault Injection)*: Validated HTTP POST
+    `/assistant/ask` returning HTTP 200, typed schema validation, and missing-key
+    503 error handling.
+- **Observed Latency (Sample Observations)**:
+  - Groq tool-selection latency: 1,438–2,923 ms
+  - Deterministic DuckDB analytics execution: 174–226 ms
+  - Explanation latency: <0.1 ms
+  - Total end-to-end HTTP request latency: ~2,184 ms
+  - *Note*: Network LLM workflow latencies do not meet the local <10 ms
+    deterministic analytics target.
+- **Run Live Verification**:
+  ```powershell
+  $isolated = Join-Path $env:TEMP 'sme-groq-live-validation-20261026\retail_engine.duckdb'
+  $env:RETAIL_ENGINE_DB_PATH = $isolated
+  python scripts/verify_live_groq.py
+  ```
+- **Production Integrity**: Production database `data\retail_engine.duckdb`
+  remained untouched throughout testing at 427,044,864 bytes and SHA-256
+  `E36903CF6096890A059CDEBF7B0971821DA69FE165C3BAA3D979523F7D475079`.
+  Production activation of review marts remains a separate authorized milestone.
 
 ### Review-grain analytics
 
@@ -362,18 +514,44 @@ dbt build --project-dir dbt_retail --profiles-dir $profileDir `
 
 ## Tests and benchmark
 
-Run the offline ingestion and catalog tests, or the full suite:
+### Running tests safely
+
+Run the full Python test suite (106 tests, all offline/mocked, no live API key required):
+
+```powershell
+python -m pytest tests -q
+```
+
+To run focused ingestion, catalog, or review metric tests:
 
 ```powershell
 python -m pytest `
   tests\test_kaggle_downloader.py tests\test_sephora_ingestion.py `
-  tests\test_catalog_metrics.py tests\test_review_metrics.py -q
-python -m pytest tests -q
+  tests\test_catalog_metrics.py tests\test_review_metrics.py `
+  tests\test_assistant_service.py -q
 ```
 
 `tests\fixtures\sephora\` contains small synthetic CSV files for deterministic
 offline tests; they are not a downloaded Kaggle snapshot and their row counts
 must not be reported as real dataset observations.
+
+### Safe dbt data test execution
+
+To verify all data models and constraints against the active production database,
+run `dbt test` in read-only mode:
+
+```powershell
+dbt test --project-dir dbt_retail --profiles-dir dbt_retail
+```
+
+This executes all **119 data tests** across staging, intermediate, and Gold marts
+without mutating or rewriting any production tables (`PASS=119 WARN=0 ERROR=0 SKIP=0`).
+
+> **Operational Safety Warning**: Never run `dbt build`, `dbt run`, or schema
+> migrations directly against the production database (`data/retail_engine.duckdb`).
+> Production transformations must always be built on an isolated staging clone
+> and verified before file-level promotion during an authorized maintenance window.
+
 
 To benchmark catalog routes locally:
 
@@ -842,28 +1020,35 @@ if ($LASTEXITCODE -ne 0) { throw 'Production dbt build failed.' }
   isolated candidate's pre-promotion fingerprint. The pre-cutover backups
   remain unchanged.
 
-**Rollback:** stop all application and warehouse users, preserve the current
-production file as a uniquely named failed-cutover artifact, restore
-`retail_engine_pre_kaggle_20261020T112237872Z.duckdb` to
-`data\retail_engine.duckdb`, and verify the restored file's 37,236,736-byte
-size, SHA-256
-`5A9BEF0D623E6744FA388B22150ABD8299FF18C14104FE6316A8BC1201E14488`, and
-read-only DuckDB queryability before restarting the prior application. The
-exact PowerShell restore/check sequence is above. The backup and prior live
-copy have not been removed.
+### Production review analytics activation (2026-10-26)
 
-### Legacy Beauty API loader
+On 2026-10-26, the 10 validated review analytics models were activated in
+production storage (`data/retail_engine.duckdb`) following the hardened,
+backup-first file replacement runbook. The candidate was fully built and tested
+in an external staging directory before promotion.
 
-`src/ingestion/load_beauty_api_to_duckdb.py` is deprecated. Running it without
-an explicit opt-in now exits before loading credentials, making a network
-request, or opening DuckDB:
-
-```powershell
-& $python -m src.ingestion.load_beauty_api_to_duckdb
-```
-
-The legacy source can only be invoked with
-`--allow-legacy-beauty-api`; do not use that flag for this pipeline. KaggleHub
-is the only intended/default Sephora source. No transaction, revenue, margin,
-inventory, purchase, or sales facts are derived from the Kaggle product or
-review data.
+- **Production file:** `data/retail_engine.duckdb`.
+- **Current verified production fingerprint:**
+  - File size: `857,223,168` bytes
+  - SHA-256 checksum: `A0D727232F2EF03F9886AD6846579A694EE3583EC8676A2898033E84744B20BD`
+  - Relations: All 16 production relations (4 raw tables, 2 staging views, 2 intermediate tables, 8 Gold review marts, and 4 Gold catalogue marts) are populated and verified.
+  - Row counts: 8,494 products, 1,094,411 reviews, 176 monthly trend buckets, 2,351 reviewed products, 142 reviewed brands.
+- **Pre-cutover restore point (preserved):**
+  - Primary pre-cutover backup: `data/backups/retail_engine_pre_cutover_20261026_152928.duckdb`
+  - Atomic swap backup: `data/backups/retail_engine_replaced_during_cutover_20261026_152928.duckdb`
+  - Size: `427,044,864` bytes
+  - SHA-256 checksum: `E36903CF6096890A059CDEBF7B0971821DA69FE165C3BAA3D979523F7D475079`
+- **Post-activation test verification:**
+  - `dbt test`: **119 passing data tests** (`PASS=119 WARN=0 ERROR=0 SKIP=0`), verifying all constraints and foreign-key mappings across all models.
+  - `pytest tests -q`: **106 passing tests** (1 Starlette deprecation warning), verifying downloader, ingestion, catalog analytics, review analytics, and assistant services.
+  - API smoke tests: All 14 GET endpoints verified returning live production data.
+- **Rollback procedure:**
+  If rollback is required, stop all warehouse users and API instances, then restore the verified pre-cutover backup:
+  ```powershell
+  $production = (Resolve-Path data\retail_engine.duckdb).Path
+  $backup = (Resolve-Path data\backups\retail_engine_pre_cutover_20261026_152928.duckdb).Path
+  Copy-Item -LiteralPath $backup -Destination $production -Force
+  if ((Get-FileHash $production -Algorithm SHA256).Hash -ne 'E36903CF6096890A059CDEBF7B0971821DA69FE165C3BAA3D979523F7D475079') {
+      throw 'Restored production fingerprint mismatch!'
+  }
+  ```

@@ -384,6 +384,13 @@ def get_database_path() -> Path:
         return Path(configured).expanduser().resolve()
     return DEFAULT_DATABASE_PATH
 
+def _sanitize_error_message(message: str, api_key: str | None = None) -> str:
+    cleaned = message
+    if api_key and api_key in cleaned:
+        cleaned = cleaned.replace(api_key, "[REDACTED]")
+    cleaned = re.sub(r"gsk_[A-Za-z0-9_-]{20,}", "[REDACTED]", cleaned)
+    return cleaned
+
 
 class GroqAnalyticsService:
     """Groq-backed natural-language assistant that stays grounded in deterministic metrics."""
@@ -530,7 +537,21 @@ class GroqAnalyticsService:
         return answer
 
     def ask(self, question: str, *, max_results: int = 10) -> AssistantAnalyticsResponse:
-        normalized = _normalize_question(question)
+        try:
+            normalized = _normalize_question(question)
+        except UnsupportedQuestionError as exc:
+            return AssistantAnalyticsResponse(
+                answer="This request is outside the supported deterministic analytics operations.",
+                operation=None,
+                supported=False,
+                result=None,
+                filters={"max_results": max_results},
+                metric_definition=None,
+                source_mart=None,
+                provider_status="unsupported_question",
+                reason=str(exc),
+            )
+
         operation = _choose_operation(normalized)
         if operation is None:
             return AssistantAnalyticsResponse(
@@ -586,15 +607,19 @@ class GroqAnalyticsService:
                 provider_status=provider_status,
                 reason=str(exc),
             )
-        except (ProviderFailure, ValueError, ValidationError, TypeError, json.JSONDecodeError) as exc:
+        except Exception as exc:
             provider_status = "provider_error"
-            if isinstance(exc, TimeoutError):
+            exc_name = type(exc).__name__
+            if "RateLimit" in exc_name:
+                provider_status = "rate_limit"
+            elif isinstance(exc, TimeoutError) or "Timeout" in exc_name:
                 provider_status = "timeout"
-            elif isinstance(exc, ValueError) and "Unsupported" in str(exc):
-                provider_status = "unsupported_question"
             elif isinstance(exc, json.JSONDecodeError):
                 provider_status = "malformed_response"
+            elif isinstance(exc, ValueError) and "Unsupported" in str(exc):
+                provider_status = "unsupported_question"
             response_text = self._grounded_answer(operation, normalized, result)
+            safe_reason = _sanitize_error_message(str(exc), self.api_key)
             return AssistantAnalyticsResponse(
                 answer=response_text,
                 operation=operation,
@@ -604,7 +629,7 @@ class GroqAnalyticsService:
                 metric_definition=OPERATION_METRIC_DEFINITIONS.get(operation),
                 source_mart=SOURCE_MARTS.get(operation),
                 provider_status=provider_status,
-                reason=str(exc),
+                reason=safe_reason,
             )
 
         return AssistantAnalyticsResponse(
