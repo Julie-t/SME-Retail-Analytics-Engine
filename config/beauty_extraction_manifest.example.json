@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "name": "example-skincare-subset",
+  "scope": {
+    "definition": "union_of_partitions",
+    "selected_categories": [
+      "skincare"
+    ],
+    "includes_uncategorized": false
+  },
+  "cost_policy": {
+    "plan": "unknown",
+    "remaining_allowance_calls": null,
+    "maximum_overage_usd": null
+  },
+  "partitions": [
+    {
+      "id": "category-skincare",
+      "filters": {
+        "category": "skincare"
+      },
+      "expected_total": null,
+      "expected_pages": null,
+      "expected_detail_items": null,
+      "status": "pending_discovery",
+      "count_source": null,
+      "blocked_reason": null
+    }
+  ]
+}

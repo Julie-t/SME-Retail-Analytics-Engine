@@ -1,0 +1,4 @@
+product_id,product_name,brand_id,brand_name,primary_category,secondary_category,tertiary_category,ingredients,price_usd,rating,reviews,loves_count,limited_edition,new,online_only,out_of_stock,sephora_exclusive,image_url
+p1,Serum One,b1,Brand A,Skincare,Treatments,Serums,"Water, Glycerin",32.00,4.5,100,500,false,false,false,false,true,https://example.test/p1.jpg
+p2,Cream Two,b2,Brand B,Skincare,Moisturizers,Face Cream,"Water, Squalane",48.50,4.0,25,200,false,true,true,false,false,https://example.test/p2.jpg
+p3,Palette Three,b3,Brand A,Makeup,Eye,Eyeshadow Palette,,59.00,3.5,0,100,false,false,false,true,false,https://example.test/p3.jpg

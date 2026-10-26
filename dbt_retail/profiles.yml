@@ -1,0 +1,8 @@
+sme_retail_analytics_engine:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: data/retail_engine.duckdb
+      schema: main
+      threads: 4

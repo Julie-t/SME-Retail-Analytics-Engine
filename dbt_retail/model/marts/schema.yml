@@ -1,0 +1,368 @@
+version: 2
+
+models:
+  - name: mart_product_catalog
+    description: >
+      Product-grain Gold detail mart projected from Silver. Carries listed USD price, product-level
+      rating and aggregate review count, category hierarchy, product flags, and source-backed
+      quality diagnostics. It does not imply sales, realized revenue, margin, or purchases.
+    columns:
+      - name: product_id
+        description: Source product identifier; one row per product record.
+        tests:
+          - not_null
+          - unique
+      - name: category
+        description: Open-ended normalized primary category, not restricted to a fixed taxonomy.
+      - name: primary_category
+        description: Original source primary category.
+      - name: secondary_category
+        description: Original source secondary category.
+      - name: tertiary_category
+        description: Original source tertiary category.
+      - name: price_usd
+        description: Listed price in USD, not a transaction price.
+      - name: product_rating
+        description: Product-level aggregate rating, not a review-row rating.
+      - name: aggregate_review_count
+        description: Product-level source aggregate, distinct from loaded review-row count.
+      - name: duplicate_product_id
+        description: Duplicate identifier diagnostic; no source records are deduplicated.
+        tests:
+          - not_null
+      - name: duplicate_brand_name_candidate
+        description: Repeated normalized brand/name pair diagnostic.
+        tests:
+          - not_null
+      - name: ingredients_text_missing
+        description: Missing/blank source ingredient text; no assumed structured format.
+        tests:
+          - not_null
+      - name: product_price_invalid
+        description: Non-empty source price that could not be parsed as a number.
+        tests:
+          - not_null
+      - name: product_rating_invalid
+        description: Non-empty source product rating that could not be parsed as a number.
+        tests:
+          - not_null
+      - name: aggregate_review_count_invalid
+        description: Non-empty product review aggregate that could not be parsed as an integer.
+        tests:
+          - not_null
+
+  - name: mart_catalog_by_category
+    description: >
+      One row per normalized primary-category value, including one null bucket if missing.
+      All source category values are retained as open values; shares divide by all product rows.
+    columns:
+      - name: product_rows
+        description: Number of product source rows in the category bucket.
+        tests:
+          - not_null
+      - name: share_of_catalog_rows
+        description: Category product rows divided by all catalog source rows.
+        tests:
+          - not_null
+
+  - name: mart_catalog_by_brand
+    description: >
+      One row per lowercase trimmed brand key, including one null-key missing-brand bucket.
+      The display label is deterministic and shares divide by all product rows.
+    columns:
+      - name: brand_missing
+        description: True only for the null grouping key.
+        tests:
+          - not_null
+      - name: product_rows
+        description: Number of product rows for the normalized brand.
+        tests:
+          - not_null
+      - name: share_of_catalog_rows
+        description: Brand product rows divided by all catalog source rows.
+        tests:
+          - not_null
+
+  - name: mart_catalog_quality_summary
+    description: >
+      Singleton quality aggregate over product source rows. All rates use product_rows as the
+      denominator and are null for an empty source. Ingredient quality is limited to missingness;
+      source ingredient text is not parsed as JSON. Review row-quality diagnostics are separately
+      captured in the ingestion manifest and are not joined to this product-grain mart.
+    columns:
+      - name: product_rows
+        description: Total product source rows.
+        tests:
+          - not_null
+      - name: distinct_product_ids
+        description: Distinct non-null source product IDs.
+        tests:
+          - not_null
+      - name: duplicate_product_id_rows
+        description: Product source rows whose ID occurs more than once.
+        tests:
+          - not_null
+      - name: duplicate_product_id_groups
+        description: Distinct product IDs occurring more than once.
+        tests:
+          - not_null
+      - name: rows_with_any_quality_issue
+        description: Product rows with at least one documented missing, invalid, or duplicate flag.
+        tests:
+          - not_null
+      - name: rows_with_any_quality_issue_rate
+        description: Rows with one or more quality issues divided by product_rows.
+
+  - name: mart_review_summary
+    description: >
+      Singleton review-source summary over all loaded review rows. Rating averages use valid
+      ratings only; recommendation rate is recommended rows divided by rows with valid boolean
+      recommendations. Missing and malformed recommendation values are reported separately.
+      Median and average rating use valid 1-to-5 ratings. Helpful votes are aggregated as positive
+      and negative feedback counts; average_helpfulness is the unweighted mean source ratio across
+      reviewed rows with votes, while weighted_helpfulness_rate is total positive votes divided
+      by total feedback votes. Review rows remain distinct from product-level aggregate counts.
+    columns:
+      - name: total_review_rows
+        description: Total loaded source review rows.
+        tests:
+          - not_null
+      - name: valid_rating_rows
+        description: Review rows with numeric ratings from 1 through 5.
+        tests:
+          - not_null
+      - name: average_rating
+        description: Average over valid_rating_rows; null when none are valid.
+      - name: median_rating
+        description: Median over valid_rating_rows; null when none are valid.
+      - name: helpfulness_review_rows
+        description: Number of review rows with at least one feedback vote.
+        tests:
+          - not_null
+      - name: total_feedback_votes
+        description: Total positive plus negative feedback votes across rows with valid counts.
+        tests:
+          - not_null
+      - name: positive_feedback_votes
+        description: Sum of positive feedback votes across rows with valid counts.
+        tests:
+          - not_null
+      - name: negative_feedback_votes
+        description: Sum of negative feedback votes across rows with valid counts.
+        tests:
+          - not_null
+      - name: average_helpfulness
+        description: Mean source helpfulness ratio over rows with valid ratios and at least one vote.
+      - name: weighted_helpfulness_rate
+        description: Positive feedback votes divided by all valid positive and negative feedback votes.
+      - name: valid_recommendation_rows
+        description: Rows with a parsed true or false recommendation.
+        tests:
+          - not_null
+      - name: recommendation_rate
+        description: Recommended rows divided by valid_recommendation_rows.
+      - name: duplicate_review_candidate_rows
+        description: All rows in repeated review fingerprints; none are removed.
+        tests:
+          - not_null
+      - name: rows_with_quality_issue_rate
+        description: Rows with one or more quality issues divided by total_review_rows.
+
+  - name: mart_review_rating_distribution
+    description: >
+      One row per valid individual review rating. Shares divide by all valid 1-to-5 ratings;
+      missing and invalid ratings are excluded from this distribution but retained in summary
+      quality counts.
+    columns:
+      - name: rating
+        description: Valid individual review rating from 1 through 5.
+        tests:
+          - not_null
+      - name: review_rows
+        description: Number of valid review rows in this rating bucket.
+        tests:
+          - not_null
+      - name: valid_rating_rows
+        description: Total valid individual review rows, repeated for denominator transparency.
+        tests:
+          - not_null
+      - name: share_of_valid_ratings
+        description: review_rows divided by valid_rating_rows.
+        tests:
+          - not_null
+
+  - name: mart_review_recommendation_summary
+    description: >
+      Singleton recommendation aggregate. Recommendation rate uses only successfully parsed
+      boolean values; missing and malformed source values are reported separately.
+    columns:
+      - name: recommended_review_rows
+        description: Valid recommendation rows whose value is true.
+        tests:
+          - not_null
+      - name: not_recommended_review_rows
+        description: Valid recommendation rows whose value is false.
+        tests:
+          - not_null
+      - name: missing_recommendation_rows
+        description: Rows with a missing or blank source recommendation.
+        tests:
+          - not_null
+      - name: invalid_recommendation_rows
+        description: Non-empty values that could not be parsed as boolean or numeric zero/one.
+        tests:
+          - not_null
+      - name: valid_recommendation_rows
+        description: Denominator for recommendation_rate.
+        tests:
+          - not_null
+      - name: recommendation_rate
+        description: recommended_review_rows divided by valid_recommendation_rows.
+
+  - name: mart_review_monthly_trends
+    description: >
+      One row per parsed submission month. Review counts include every dated source review;
+      average rating uses valid 1-to-5 values and recommendation rate uses valid boolean values.
+    columns:
+      - name: month
+        description: Calendar month of parsed submission date.
+        tests:
+          - not_null
+          - unique
+      - name: review_rows
+        description: Dated source review rows in the month.
+        tests:
+          - not_null
+      - name: valid_rating_rows
+        description: Rating denominator for average_rating.
+        tests:
+          - not_null
+      - name: valid_recommendation_rows
+        description: Recommendation denominator for recommendation_rate.
+        tests:
+          - not_null
+
+  - name: mart_review_product_summary
+    description: >
+      One row per reviewed product ID and validated catalog name, including every product with
+      at least one loaded review and a null-ID bucket if present. Ranked by review_rows descending,
+      then product ID and name ascending; no minimum review threshold is applied.
+    columns:
+      - name: review_rows
+        description: Loaded source review rows for the product.
+        tests:
+          - not_null
+      - name: valid_rating_rows
+        description: Rating denominator for average_rating.
+        tests:
+          - not_null
+      - name: valid_recommendation_rows
+        description: Recommendation denominator for recommendation_rate.
+        tests:
+          - not_null
+
+  - name: mart_review_brand_summary
+    description: >
+      One row per normalized catalog brand, including a null-brand bucket. All matched and
+      unmatched review rows contribute exactly once; rating and recommendation metrics have
+      separate valid-row denominators.
+    columns:
+      - name: review_rows
+        description: Loaded source review rows in the brand bucket.
+        tests:
+          - not_null
+      - name: valid_rating_rows
+        description: Rating denominator for average_rating.
+        tests:
+          - not_null
+      - name: valid_recommendation_rows
+        description: Recommendation denominator for recommendation_rate.
+        tests:
+          - not_null
+
+  - name: mart_review_category_summary
+    description: >
+      One row per normalized catalog primary category, including a null-category bucket. All
+      review rows contribute exactly once; rating and recommendation metrics have separate
+      valid-row denominators.
+    columns:
+      - name: review_rows
+        description: Loaded source review rows in the category bucket.
+        tests:
+          - not_null
+      - name: valid_rating_rows
+        description: Rating denominator for average_rating.
+        tests:
+          - not_null
+      - name: valid_recommendation_rows
+        description: Recommendation denominator for recommendation_rate.
+        tests:
+          - not_null
+
+  - name: mart_review_quality_summary
+    description: >
+      Singleton review-quality aggregate. All rates divide by total_review_rows; source rows
+      are retained, including missing, invalid, duplicate-candidate, and orphan rows.
+    columns:
+      - name: total_review_rows
+        description: Total loaded source review rows and quality-rate denominator.
+        tests:
+          - not_null
+      - name: missing_product_id_rows
+        description: Review rows with absent product IDs.
+        tests:
+          - not_null
+      - name: missing_rating_rows
+        description: Review rows with blank ratings.
+        tests:
+          - not_null
+      - name: invalid_rating_rows
+        description: Non-empty ratings that cannot parse or fall outside 1 through 5.
+        tests:
+          - not_null
+      - name: missing_recommendation_rows
+        description: Review rows with blank recommendations.
+        tests:
+          - not_null
+      - name: invalid_recommendation_rows
+        description: Non-empty recommendation values that cannot parse as boolean or zero/one.
+        tests:
+          - not_null
+      - name: missing_submission_time_rows
+        description: Review rows with missing or unparseable dates.
+        tests:
+          - not_null
+      - name: missing_review_text_rows
+        description: Review rows with missing or blank review text.
+        tests:
+          - not_null
+      - name: missing_review_title_rows
+        description: Review rows with missing or blank review title.
+        tests:
+          - not_null
+      - name: duplicate_review_candidate_rows
+        description: Rows sharing a review candidate fingerprint; none are removed.
+        tests:
+          - not_null
+      - name: helpfulness_missing_rows
+        description: Rows with positive feedback counts but missing helpfulness ratios.
+        tests:
+          - not_null
+      - name: helpfulness_invalid_rows
+        description: Rows with out-of-range or vote-inconsistent helpfulness ratios.
+        tests:
+          - not_null
+      - name: invalid_feedback_count_rows
+        description: Rows with invalid counts or total feedback not equal to positive plus negative.
+        tests:
+          - not_null
+      - name: orphan_product_id_rows
+        description: Non-empty review product IDs without a catalog match.
+        tests:
+          - not_null
+      - name: rows_with_quality_issue
+        description: Rows with at least one documented review quality issue.
+        tests:
+          - not_null
+      - name: rows_with_quality_issue_rate
+        description: rows_with_quality_issue divided by total_review_rows.

@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+ENV/
+dbt_retail/target/
+dbt_retail/logs/
+dbt_retail/dbt_packages/
+data/*.duckdb
+data/**/*.duckdb
+data/raw/
+data/source/sephora_kaggle/
+__pycache__/
+*.py[cod]
+.pytest_cache/

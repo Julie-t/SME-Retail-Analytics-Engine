@@ -1,0 +1,2 @@
+product_id,author_id,rating,is_recommended,submission_time,review_text,review_title,total_feedback_count,total_neg_feedback_count,total_pos_feedback_count,skin_tone,eye_color,skin_type,hair_color,product_name,brand_name,price_usd
+p1,a1,5,true,2024-01-01,"Great, works well",Love it,2,0,2,light,brown,dry,black,Serum One,Brand A,32.00

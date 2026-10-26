@@ -1,0 +1,12 @@
+name: sme_retail_analytics_engine
+version: "1.0.0"
+config-version: 2
+
+profile: sme_retail_analytics_engine
+
+model-paths:
+  - model
+
+clean-targets:
+  - target
+  - dbt_packages

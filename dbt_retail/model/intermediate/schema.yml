@@ -1,0 +1,90 @@
+version: 2
+
+models:
+  - name: int_product_catalog
+    description: >
+      Product-source-row-grain Silver catalog normalization and quality model. Source values
+      and category hierarchy remain available; normalized brand/name/category keys support
+      deterministic grouping. Duplicate candidates are diagnosed, never deduplicated. Ingredient
+      text is preserved and only missingness is checked because no parser has been validated
+      against the downloaded source version.
+    columns:
+      - name: product_id
+        description: Source product identifier; each product source row remains one row.
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_raw_products')
+                field: product_id
+      - name: brand_key
+        description: Lowercase trimmed brand grouping key; null for missing/blank brands.
+      - name: brand_missing
+        description: True when brand is null, empty, or whitespace-only.
+        tests:
+          - not_null
+      - name: product_name_missing
+        description: True when product name is null, empty, or whitespace-only.
+        tests:
+          - not_null
+      - name: category_missing
+        description: True when the source primary category is null or blank.
+        tests:
+          - not_null
+      - name: ingredients_text_missing
+        description: True when source ingredient text is null, empty, or whitespace-only.
+        tests:
+          - not_null
+      - name: product_price_missing
+        description: True when the listed product price is absent.
+        tests:
+          - not_null
+      - name: product_price_invalid
+        description: True when a non-empty listed price cannot be cast to a number.
+        tests:
+          - not_null
+      - name: product_rating_missing
+        description: True when the source product-level rating is absent.
+        tests:
+          - not_null
+      - name: product_rating_invalid
+        description: True when a non-empty product-level rating cannot be cast to a number.
+        tests:
+          - not_null
+      - name: aggregate_review_count_missing
+        description: True when the product-level source review aggregate is absent.
+        tests:
+          - not_null
+      - name: aggregate_review_count_invalid
+        description: True when a non-empty product review aggregate cannot be cast to an integer.
+        tests:
+          - not_null
+      - name: loves_count_invalid
+        description: True when a non-empty popularity count cannot be cast to an integer.
+        tests:
+          - not_null
+
+  - name: int_review_analytics
+    description: >
+      Review-source-row-grain Silver model joined to the unique product Gold mart. The left join
+      preserves missing and orphan IDs without multiplying reviews. Review counts are individual
+      loaded source rows, never product-level aggregate review counts. Reviewer identifiers and
+      profile attributes are not projected into this analytics layer.
+    columns:
+      - name: rating_valid
+        description: True only for a parsed rating from 1 through 5.
+        tests:
+          - not_null
+      - name: recommendation_valid
+        description: True when the source recommendation parsed as boolean.
+        tests:
+          - not_null
+      - name: orphan_product_id
+        description: True when a non-empty review product ID has no unique catalog match.
+        tests:
+          - not_null
+      - name: review_quality_issue
+        description: True when one or more documented review quality flags apply.
+        tests:
+          - not_null
